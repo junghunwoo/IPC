@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2인실 기숙사 디지털 트윈 - Week 2</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --panel: rgba(12, 20, 31, 0.88);
+    --line: rgba(255, 255, 255, 0.14);
+    --text: #f3f7fb;
+    --muted: #b9c7d6;
+    --accent: #ff9d3b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    background: #b9c7d8;
+  }
+  canvas { display: block; }
+  #header {
+    position: fixed;
+    left: 16px;
+    top: 16px;
+    z-index: 10;
+    width: min(530px, calc(100vw - 32px));
+    padding: 16px 18px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(10px);
+  }
+  #header h1 {
+    margin: 0 0 6px;
+    font-size: clamp(20px, 3vw, 28px);
+    line-height: 1.2;
+  }
+  #header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  #header strong { color: #fff; }
+  #legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 12px;
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid var(--line);
+    color: #e6edf5;
+    font-size: 13px;
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch {
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.28);
+  }
+  #controls {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+    gap: 8px;
+    width: min(340px, calc(100vw - 32px));
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: 0 16px 38px rgba(0,0,0,.22);
+    backdrop-filter: blur(10px);
+  }
+  button {
+    min-height: 42px;
+    padding: 9px 12px;
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 10px;
+    background: #25364c;
+    color: #fff;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:hover { background: #314b6a; }
+  button.primary {
+    border-color: rgba(255,157,59,.55);
+    background: #c86718;
+  }
+  button.primary:hover { background: #e17a25; }
+  #hover-label {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    z-index: 10;
+    min-width: 170px;
+    padding: 9px 12px;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    font-size: 13px;
+    pointer-events: none;
+  }
+  #status {
+    position: fixed;
+    right: 16px;
+    top: 16px;
+    z-index: 10;
+    padding: 9px 12px;
+    color: #f8fbff;
+    background: rgba(12,20,31,.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    font-size: 12px;
+  }
+  @media (max-width: 700px) {
+    #header { padding: 13px 14px; }
+    #header p { font-size: 12px; }
+    #legend { font-size: 11px; }
+    #status { display: none; }
+    #hover-label { bottom: 122px; }
+    #controls { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<section id="header" aria-label="과제 설명과 범례">
+  <h1>2인실 기숙사 디지털 트윈</h1>
+  <p>
+    실제 크기 약 <strong>6 × 4.5 × 2.5m</strong>의 방을 박스 프리미티브로 개념화했습니다.
+    마우스로 회전하고 휠로 확대하며, 강조된 의자를 책상 안팎으로 움직일 수 있습니다.
+  </p>
+  <div id="legend" aria-label="색상 범례">
+    <span class="legend-item"><span class="swatch" style="background:#5e8bc4"></span>침대 2개</span>
+    <span class="legend-item"><span class="swatch" style="background:#7f5334"></span>책상 2개</span>
+    <span class="legend-item"><span class="swatch" style="background:#2f867f"></span>룸메이트 의자</span>
+    <span class="legend-item"><span class="swatch" style="background:#ff8c2a"></span>내 의자(B 대상)</span>
+  </div>
+</section>
+
+<div id="status">바닥 1면 · 벽 4면 · 모든 치수 단위 m</div>
+<div id="hover-label">물체 위에 마우스를 올려보세요</div>
+<div id="controls" aria-label="장면 조작">
+  <button id="chair-button" class="primary">내 의자 빼기</button>
+  <button id="inside-view">방 안 보기</button>
+  <button id="top-view">배치도 보기</button>
+  <button id="wall-button">벽 투명하게</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* 과제 A 기준 공간 치수: 가로(x) 6m, 세로(z) 4.5m, 높이(y) 2.5m */
+const ROOM = { width: 6, depth: 4.5, height: 2.5 };
+
+const COLORS = {
+  floor: 0xd9d2c3,
+  wall: 0xf0ece4,
+  bed: 0x5e8bc4,
+  desk: 0x7f5334,
+  roommateChair: 0x2f867f,
+  myChair: 0xff8c2a,
+};
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xb9c7d8);
+scene.fog = new THREE.Fog(0xb9c7d8, 8, 18);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.05, 50);
+camera.position.set(0.35, 1.7, 1.7);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.8, -0.35);
+controls.enableDamping = true;
+controls.maxDistance = 12;
+controls.minDistance = 0.6;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.update();
+
+scene.add(new THREE.HemisphereLight(0xeaf5ff, 0x5b4a3d, 1.45));
+const sun = new THREE.DirectionalLight(0xffffff, 2.1);
+sun.position.set(-1.5, 5.5, 3.5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -5;
+sun.shadow.camera.right = 5;
+sun.shadow.camera.top = 5;
+sun.shadow.camera.bottom = -5;
+scene.add(sun);
+
+const selectable = [];
+
+function material(color, extra = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.72,
+    metalness: 0.02,
+    ...extra,
+  });
+}
+
+function box(name, size, position, color, options = {}) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(size[0], size[1], size[2]),
+    material(color, options.material)
+  );
+  mesh.position.set(position[0], position[1], position[2]);
+  mesh.castShadow = options.castShadow ?? true;
+  mesh.receiveShadow = options.receiveShadow ?? true;
+  mesh.userData.name = name;
+  scene.add(mesh);
+  selectable.push(mesh);
+  return mesh;
+}
+
+/* 바닥 1면 */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(ROOM.width, ROOM.depth),
+  material(COLORS.floor, { roughness: 0.94 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+floor.userData.name = '바닥';
+scene.add(floor);
+selectable.push(floor);
+
+const grid = new THREE.GridHelper(ROOM.width, 12, 0x8793a1, 0xadb5bf);
+grid.scale.z = ROOM.depth / ROOM.width;
+grid.position.y = 0.003;
+grid.material.opacity = 0.24;
+grid.material.transparent = true;
+scene.add(grid);
+
+/* 벽 4면: 앞·뒤는 width, 좌·우는 depth 길이 */
+const walls = [];
+function wall(name, width, position, rotationY = 0) {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, ROOM.height),
+    material(COLORS.wall, {
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.92,
+    })
+  );
+  mesh.position.set(...position);
+  mesh.rotation.y = rotationY;
+  mesh.receiveShadow = true;
+  mesh.userData.name = name;
+  scene.add(mesh);
+  selectable.push(mesh);
+  walls.push(mesh);
+}
+
+wall('뒷벽', ROOM.width, [0, ROOM.height / 2, -ROOM.depth / 2], 0);
+wall('앞벽', ROOM.width, [0, ROOM.height / 2,  ROOM.depth / 2], 0);
+wall('왼쪽 벽', ROOM.depth, [-ROOM.width / 2, ROOM.height / 2, 0], Math.PI / 2);
+wall('오른쪽 벽', ROOM.depth, [ ROOM.width / 2, ROOM.height / 2, 0], Math.PI / 2);
+
+/* 오른쪽 벽의 침대 두 개 */
+box('침대 1', [1.0, 0.52, 1.85], [2.30, 0.26, -1.15], COLORS.bed);
+box('침대 2', [1.0, 0.52, 1.85], [2.30, 0.26,  1.15], COLORS.bed);
+
+/* 왼쪽 벽의 책상 두 개 */
+box('책상 1', [0.68, 0.74, 1.25], [-2.60, 0.37, -1.25], COLORS.desk);
+box('책상 2', [0.68, 0.74, 1.25], [-2.60, 0.37,  1.15], COLORS.desk);
+
+/* 의자는 모두 박스 프리미티브만 조합해 좌판·등받이·다리를 표현 */
+function chair(name, color, position) {
+  const group = new THREE.Group();
+  group.position.set(...position);
+  group.userData.name = name;
+
+  const parts = [
+    { size: [0.48, 0.10, 0.48], pos: [0, 0.48, 0] },
+    { size: [0.09, 0.48, 0.48], pos: [0.195, 0.76, 0] },
+    { size: [0.07, 0.48, 0.07], pos: [-0.19, 0.24, -0.19] },
+    { size: [0.07, 0.48, 0.07], pos: [-0.19, 0.24,  0.19] },
+    { size: [0.07, 0.48, 0.07], pos: [ 0.19, 0.24, -0.19] },
+    { size: [0.07, 0.48, 0.07], pos: [ 0.19, 0.24,  0.19] },
+  ];
+
+  for (const part of parts) {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(...part.size),
+      material(color)
+    );
+    mesh.position.set(...part.pos);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData.name = name;
+    group.add(mesh);
+    selectable.push(mesh);
+  }
+
+  scene.add(group);
+  return group;
+}
+
+const myChair = chair('내 의자 - 과제 B 대상', COLORS.myChair, [-1.88, 0, -1.25]);
+chair('룸메이트 의자', COLORS.roommateChair, [-1.88, 0, 1.15]);
+
+/* 내 의자: 왼쪽 책상 안쪽(-1.88m) ↔ 방 중앙 쪽(-1.15m) */
+const CHAIR_X = { tucked: -1.88, pulled: -1.15 };
+let chairPulled = false;
+let chairTargetX = CHAIR_X.tucked;
+
+const chairButton = document.getElementById('chair-button');
+chairButton.addEventListener('click', () => {
+  chairPulled = !chairPulled;
+  chairTargetX = chairPulled ? CHAIR_X.pulled : CHAIR_X.tucked;
+  chairButton.textContent = chairPulled ? '내 의자 넣기' : '내 의자 빼기';
+});
+
+function setView(position, target) {
+  camera.position.set(...position);
+  controls.target.set(...target);
+  controls.update();
+}
+
+document.getElementById('inside-view').addEventListener('click', () => {
+  setView([0.35, 1.7, 1.7], [0, 0.8, -0.35]);
+});
+
+document.getElementById('top-view').addEventListener('click', () => {
+  setView([0.01, 8.3, 0.01], [0, 0, 0]);
+});
+
+let wallsTransparent = false;
+const wallButton = document.getElementById('wall-button');
+wallButton.addEventListener('click', () => {
+  wallsTransparent = !wallsTransparent;
+  for (const item of walls) {
+    item.material.opacity = wallsTransparent ? 0.22 : 0.92;
+    item.material.depthWrite = !wallsTransparent;
+  }
+  wallButton.textContent = wallsTransparent ? '벽 원래대로' : '벽 투명하게';
+});
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const hoverLabel = document.getElementById('hover-label');
+
+renderer.domElement.addEventListener('pointermove', event => {
+  pointer.x = (event.clientX / innerWidth) * 2 - 1;
+  pointer.y = -(event.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(selectable, false);
+  const name = hits[0]?.object?.userData?.name;
+  hoverLabel.textContent = name ? `👉 ${name}` : '물체 위에 마우스를 올려보세요';
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  myChair.position.x = THREE.MathUtils.damp(myChair.position.x, chairTargetX, 8, dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.twin = {
+  scene,
+  camera,
+  renderer,
+  room: ROOM,
+  walls,
+  myChair,
+  moveChair(pulled) {
+    chairPulled = Boolean(pulled);
+    chairTargetX = chairPulled ? CHAIR_X.pulled : CHAIR_X.tucked;
+    chairButton.textContent = chairPulled ? '내 의자 넣기' : '내 의자 빼기';
+  },
+};
+
+console.log('[Week2-A] 2인실 기숙사 디지털 트윈 준비 완료', window.twin);
+</script>
+</body>
+</html>
