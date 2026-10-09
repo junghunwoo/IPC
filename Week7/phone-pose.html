@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>폰 자이로 → MQTT 자세 발행 (아이폰·안드로이드)</title>
+<style>
+  body { margin:0; min-height:100vh; background:#101418; color:#eef2f8; font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  header { background:rgba(20,24,32,.95); padding:12px 16px; font-size:14px; line-height:1.5; border-bottom:1px solid #2e3849; } header b { color:#7fd1ff; }
+  main { max-width:520px; margin:0 auto; padding:14px 16px 40px; }
+  section { background:#161b22; border:1px solid #2e3849; border-radius:12px; padding:14px 16px; margin-bottom:12px; }
+  h2 { font-size:14px; margin:0 0 8px; color:#7fd1ff; }
+  label { display:block; font-size:13px; color:#9fb0c6; margin:8px 0 4px; }
+  input, select { width:100%; font:inherit; font-size:16px; padding:10px; border-radius:8px; border:1px solid #2e3849; background:#0e1219; color:#fff; box-sizing:border-box; }
+  input.id { font-size:22px; text-align:center; letter-spacing:.15em; }
+  button { width:100%; font:inherit; font-size:17px; font-weight:700; padding:14px; margin-top:8px; border:0; border-radius:12px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button.gray { background:#3a4657; } button.amber { background:#c47d12; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; font-size:14px; } .row .k { color:#9fb0c6; } .row .v { font-variant-numeric:tabular-nums; font-weight:700; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#666; margin-right:6px; } .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; } .dot.err { background:#ff7676; }
+  .big { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; text-align:center; margin-top:6px; }
+  .big div { background:#0e1219; border-radius:10px; padding:8px 4px; } .big b { display:block; font-size:26px; font-variant-numeric:tabular-nums; } .big small { color:#9fb0c6; }
+  #warn { display:none; background:#5a3a00; color:#ffd166; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:12px; line-height:1.5; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#9fe8b4; background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; margin-top:8px; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+</style>
+</head>
+<body>
+<header><b>폰 자이로 → 3D 자세</b> — 폰의 기울기(방향 센서)를 <code>khu/pcomp/{id}/pose</code>로 발행합니다. 노트북의 <code>mqtt-pose-twin.html</code>이 같은 ID로 구독 중이면 3D 모델이 폰과 같은 자세로 기울어집니다.</header>
+<main>
+  <div id="warn">⚠️ 이 페이지는 <b>https</b> 주소에서만 센서가 켜집니다. 파일을 직접 열었거나(<code>file://</code>) <code>http://</code>이면 GitHub Pages 주소로 다시 접속하세요.</div>
+  <section>
+    <h2>① 브로커 · ID</h2>
+    <label>브로커</label>
+    <select id="brokerKind"><option value="public">공개 (broker.emqx.io)</option><option value="cloud">클라우드 (EMQX Serverless, 계정)</option></select>
+    <div id="cloudBox" style="display:none">
+      <label>주소 (wss://…emqxsl.com:8084/mqtt)</label><input id="cloudUrl">
+      <label>사용자 이름</label><input id="cloudUser"><label>비밀번호</label><input id="cloudPass" type="password">
+    </div>
+    <label>내 ID (트윈과 같게)</label><input id="idInput" class="id" maxlength="12" placeholder="1234">
+    <button id="startBtn">센서 시작 &amp; 전송</button>
+    <button id="stopBtn" class="gray" style="display:none">중지</button>
+    <div style="margin-top:8px">
+      <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+      <div class="row"><span class="k">보낸 메시지</span><span class="v" id="count">0</span></div>
+    </div>
+  </section>
+  <section>
+    <h2>② 지금 값 — 폰을 기울여 보세요</h2>
+    <div class="big"><div><b id="vb">–</b><small>beta 앞뒤 → rx</small></div><div><b id="va">–</b><small>alpha 좌우 회전 → ry</small></div><div><b id="vg">–</b><small>gamma 좌우 기울기 → rz</small></div></div>
+    <label>매핑 <small>(👉 내 실물에 맞게)</small></label>
+    <select id="mapMode">
+      <option value="tilt">기울기 그대로 — rx=beta, ry=alpha(시작 방향 기준), rz=gamma</option>
+      <option value="door">문 — beta 하나만 ry 로 (0~90° 로 자름)</option>
+    </select>
+    <label>전송 간격 (ms) <small>— 클라우드는 100 이상</small></label>
+    <select id="interval"><option value="100">100 (초당 10번)</option><option value="200" selected>200 (초당 5번)</option><option value="500">500</option></select>
+    <div id="payload">아직 보낸 값이 없습니다.</div>
+    <button id="zeroBtn" class="gray">지금 방향을 0으로 (ry 기준 재설정)</button>
+    <button id="simBtn" class="amber">폰 없이 테스트 (시뮬레이션)</button>
+  </section>
+  <section style="font-size:12px;color:#9fb0c6;line-height:1.6">
+    아이폰: "센서 시작" 버튼을 누른 뒤 <b>동작 및 방향 접근 허용</b> 팝업에서 허용. 팝업이 안 뜨면 설정 → Safari → "동작 및 방향 접근"을 켜고 새로고침.<br>
+    안드로이드(크롬): 버튼만 누르면 됩니다. 화면이 꺼지면 전송이 멈추니 자동 잠금을 끄세요.
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+<script>
+/* ===== 👉 여기를 바꿔보세요 — 브로커·토픽 규약 (mqtt-pose-twin.html 과 같아야 합니다) ===== */
+const PUBLIC_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const 토픽 = id => `khu/pcomp/${id}/pose`;
+/* ============================================================================ */
+const $ = id => document.getElementById(id);
+const 안전 = location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname);
+if (!안전) $('warn').style.display = 'block';
+
+let client = null, 타이머 = null, 보낸수 = 0, 내ID = '', 기준alpha = null, 시뮬 = false;
+const 최신 = { alpha: 0, beta: 0, gamma: 0 };
+function 상태표시(t, cls) { $('connState').textContent = t; $('dot').className = 'dot ' + (cls || ''); }
+$('brokerKind').addEventListener('change', () => { $('cloudBox').style.display = $('brokerKind').value === 'cloud' ? 'block' : 'none'; });
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+
+/* 센서 → 최신값 (iOS 는 버튼 안에서 권한 요청) */
+function 방향수신(e) { if (e.alpha == null) return; 최신.alpha = e.alpha; 최신.beta = e.beta; 최신.gamma = e.gamma; if (기준alpha === null) 기준alpha = e.alpha; }
+async function 센서켜기() {
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    const r = await DeviceOrientationEvent.requestPermission();      // ← iOS 13+ 권한 팝업 (반드시 클릭 안에서)
+    if (r !== 'granted') { alert('센서 권한이 거부되었습니다. 설정 → Safari → 동작 및 방향 접근을 켜 주세요.'); return false; }
+  }
+  window.addEventListener('deviceorientation', 방향수신);
+  return true;
+}
+
+/* 최신값 → pose JSON */
+function 각도차(a, b) { let d = a - b; while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+function 페이로드() {
+  const mode = $('mapMode').value, ry = 기준alpha === null ? 0 : -각도차(최신.alpha, 기준alpha);
+  const d = mode === 'door'
+    ? { ry: Math.max(0, Math.min(90, Math.abs(최신.beta))), t: Date.now() }           // 문: beta 하나만 0~90
+    : { rx: +최신.beta.toFixed(1), ry: +ry.toFixed(1), rz: +(-최신.gamma).toFixed(1), t: Date.now() };   // 기울기 그대로
+  $('vb').textContent = 최신.beta.toFixed(0); $('va').textContent = ry.toFixed(0); $('vg').textContent = 최신.gamma.toFixed(0);
+  return d;
+}
+function 보내기() {
+  const d = 페이로드(); const s = JSON.stringify(d);
+  $('payload').textContent = s;
+  if (client && client.connected) { client.publish(토픽(내ID), s); 보낸수++; $('count').textContent = 보낸수; }
+}
+
+$('startBtn').addEventListener('click', async () => {
+  내ID = $('idInput').value.trim(); if (!내ID) { alert('트윈과 같은 ID를 입력하세요'); return; }
+  localStorage.setItem('khu_pcomp_id', 내ID);
+  if (!시뮬 && !(await 센서켜기())) return;
+  const cloud = $('brokerKind').value === 'cloud';
+  const opts = { clientId: 'phone-pose-' + 내ID + '-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 2000, connectTimeout: 8000, clean: true };
+  if (cloud) { opts.username = $('cloudUser').value.trim(); opts.password = $('cloudPass').value; }
+  if (client) client.end(true); 상태표시('연결 중…', '');
+  client = mqtt.connect(cloud ? $('cloudUrl').value.trim() : PUBLIC_BROKER, opts);
+  client.on('connect', () => { 상태표시('연결됨 ✔ 전송 중', 'on'); $('startBtn').style.display = 'none'; $('stopBtn').style.display = 'block';
+    if (타이머) clearInterval(타이머); 타이머 = setInterval(보내기, +$('interval').value); });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('error', e => 상태표시('오류: ' + e.message, 'err'));
+});
+$('stopBtn').addEventListener('click', () => { if (타이머) clearInterval(타이머); 타이머 = null; if (client) client.end(true); client = null; 상태표시('중지', ''); $('startBtn').style.display = 'block'; $('stopBtn').style.display = 'none'; });
+$('interval').addEventListener('change', () => { if (타이머) { clearInterval(타이머); 타이머 = setInterval(보내기, +$('interval').value); } });
+$('zeroBtn').addEventListener('click', () => { 기준alpha = 최신.alpha; });
+$('simBtn').addEventListener('click', () => {           // 노트북에서 흐름만 확인할 때: 가짜 기울기
+  시뮬 = !시뮬; $('simBtn').textContent = 시뮬 ? '시뮬레이션 끄기' : '폰 없이 테스트 (시뮬레이션)';
+  if (시뮬) { const t0 = Date.now(); 기준alpha = 0;
+    시뮬타이머 = setInterval(() => { const p = (Date.now() - t0) / 5000 * Math.PI * 2; 최신.alpha = 30 * Math.sin(p); 최신.beta = 45 + 40 * Math.sin(p * 0.7); 최신.gamma = 25 * Math.sin(p * 1.3); }, 50); }
+  else clearInterval(시뮬타이머);
+});
+let 시뮬타이머 = null;
+</script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>폰 센서 → MQTT 보내기</title>
+<style>
+  :root { --bg:#12161f; --card:#1d2431; --line:#2e3849; --hi:#7fd1ff; --ok:#37d67a; --warn:#ffb020; --bad:#ff7676; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:14px 14px 48px; background:var(--bg); color:#eef2f8;
+    font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; -webkit-text-size-adjust:100%; }
+  h1 { font-size:19px; margin:4px 0 6px; }
+  p.desc { font-size:14px; line-height:1.5; color:#b9c4d4; margin:0 0 14px; }
+  #warn { display:none; background:#4a2a00; border:1px solid var(--warn); color:#ffd88a;
+    padding:10px 12px; border-radius:10px; font-size:14px; line-height:1.5; margin-bottom:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px 14px; margin-top:12px; }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--hi); font-weight:600; }
+  label { font-size:14px; color:#9fb0c6; display:block; margin-bottom:6px; }
+  input {
+    width:100%; font:inherit; font-size:22px; padding:12px; border-radius:10px;
+    border:1px solid var(--line); background:#0e1219; color:#fff; text-align:center; letter-spacing:.15em;
+  }
+  button { width:100%; font:inherit; font-size:19px; font-weight:700; padding:16px; margin-top:10px;
+    border:0; border-radius:14px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button:disabled { background:#3a4657; color:#94a2b6; }
+  button.gray { background:#3a4657; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; padding:4px 0; }
+  .row .k { font-size:14px; color:#9fb0c6; }
+  .row .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#666; margin-right:7px; vertical-align:middle; }
+  .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .dot.err { background:var(--bad); }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:#9fe8b4;
+    background:#0e1219; border-radius:8px; padding:10px; word-break:break-all; line-height:1.5; }
+  #toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(80px);
+    background:#2f6fed; color:#fff; padding:14px 22px; border-radius:999px; font-size:16px; font-weight:700;
+    opacity:0; transition:.25s; z-index:99; pointer-events:none; }
+  #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:13px; }
+</style>
+</head>
+<body>
+
+<h1>📡 폰 센서 → MQTT 보내기</h1>
+<p class="desc">
+  폰 센서 값을 공개 MQTT 브로커로 <b>1초에 10번</b> 보냅니다.<br>
+  노트북에서 <code>twin-subscribe.html</code> 을 열고 <b>같은 ID</b>를 입력하면 방 모델이 움직입니다.
+</p>
+
+<div id="warn"></div>
+
+<div class="card">
+  <h2>1단계 · 내 ID 정하기</h2>
+  <label>학번 뒷 4자리 (친구와 겹치지 않는 아무 문자열도 괜찮습니다)</label>
+  <input id="idInput" inputmode="numeric" maxlength="12" placeholder="예: 1234">
+  <button id="startBtn">센서 시작 &amp; 전송</button>
+  <button id="stopBtn" class="gray" style="display:none">전송 멈추기</button>
+</div>
+
+<div class="card">
+  <h2>2단계 · 상태</h2>
+  <div class="row"><span class="k"><span class="dot" id="dot"></span>브로커 연결</span><span class="v" id="connState" style="font-size:16px">대기 중</span></div>
+  <div class="row"><span class="k">보낸 메시지 수</span><span class="v" id="count">0</span></div>
+  <div class="row"><span class="k">전송 토픽</span><span class="v" id="topic" style="font-size:13px;color:#9fb0c6">–</span></div>
+</div>
+
+<div class="card">
+  <h2>지금 보내는 값</h2>
+  <div id="payload">아직 보낸 값이 없습니다.</div>
+</div>
+
+<p class="desc" style="margin-top:14px">
+  💡 노트북에서 <code>{"vibrate":200}</code> 를 <code>khu/pcomp/내ID/cmd</code> 로 보내면
+  이 폰이 <b>진동</b>합니다. (11주차 양방향 통신 맛보기 · 안드로이드에서 동작, iOS는 진동 미지원)
+</p>
+
+<div id="toast"></div>
+
+<!-- MQTT.js 라이브러리 (전역 변수 mqtt 가 생깁니다) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+<script>
+/* =====================================================================
+   설정 —  👉 여기를 바꿔보세요
+   ===================================================================== */
+const BROKER   = 'wss://broker.emqx.io:8084/mqtt';  // 공개 브로커 (누구나 사용 가능)
+const 전송간격  = 100;   // ms. 100 = 1초에 10번. 200으로 하면 1초에 5번(더 느리지만 안정적)
+
+/* ---- HTTPS 확인 (센서는 https 에서만 켜집니다) ---- */
+const 로컬 = ['localhost','127.0.0.1'].includes(location.hostname);
+if (!(location.protocol === 'https:' || 로컬)) {
+  const w = document.getElementById('warn');
+  w.style.display = 'block';
+  w.innerHTML = '⚠️ <b>센서는 HTTPS에서만 동작합니다.</b><br>' +
+    (location.protocol === 'file:'
+      ? '지금은 파일을 <b>직접 연 상태</b>(<code>file://</code>)입니다. <b>폰에서는 동작하지 않습니다.</b><br>'
+      : '지금 주소: <code>' + location.protocol + '//' + location.host + '</code><br>') +
+    'GitHub Pages 등 <code>https://</code> 주소로 접속하세요.';
+}
+
+const $ = (id) => document.getElementById(id);
+
+/* ---- 지난번에 쓴 ID를 기억해 둡니다 (localStorage = 브라우저 저장소) ---- */
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+
+/* ---- 센서 최신값을 담아둘 그릇. 규약의 페이로드 형식 그대로입니다 ---- */
+let 최신 = { ax:0, ay:0, az:0, alpha:0, beta:0, gamma:0, t:0 };
+let client = null, 타이머 = null, 보낸수 = 0, 내ID = '';
+
+function 상태표시(글자, 종류) {
+  $('connState').textContent = 글자;
+  $('dot').className = 'dot' + (종류 ? ' ' + 종류 : '');
+}
+function 토스트(글자) {
+  const t = $('toast'); t.textContent = 글자; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+/* =====================================================================
+   ①  시작 버튼 — 센서 권한 → 센서 듣기 → MQTT 연결 → 주기 전송
+   ===================================================================== */
+$('startBtn').addEventListener('click', async () => {
+  내ID = ($('idInput').value || '').trim();
+  if (!내ID) { 토스트('먼저 ID를 입력하세요'); return; }
+  localStorage.setItem('khu_pcomp_id', 내ID);
+
+  // (1) 아이폰(iOS 13+) 권한 요청 — 반드시 버튼 클릭 안에서
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const 결과 = await DeviceMotionEvent.requestPermission();
+      if (결과 !== 'granted') { 토스트('센서 권한이 거부되었습니다'); return; }
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      await DeviceOrientationEvent.requestPermission();
+    }
+  } catch (e) { 토스트('권한 오류: ' + e.message); return; }
+
+  // (2) 센서 값 듣기 — 값이 올 때마다 "최신" 그릇만 갱신합니다(보내지는 않음)
+  window.addEventListener('devicemotion', (e) => {
+    const a = e.accelerationIncludingGravity || {};
+    최신.ax = +(a.x || 0); 최신.ay = +(a.y || 0); 최신.az = +(a.z || 0);
+  });
+  window.addEventListener('deviceorientation', (e) => {
+    최신.alpha = +(e.alpha || 0); 최신.beta = +(e.beta || 0); 최신.gamma = +(e.gamma || 0);
+  });
+
+  // (3) MQTT 브로커에 연결
+  연결하기();
+
+  $('startBtn').style.display = 'none';
+  $('stopBtn').style.display = 'block';
+});
+
+$('stopBtn').addEventListener('click', () => {
+  if (타이머) { clearInterval(타이머); 타이머 = null; }
+  if (client) { client.end(true); client = null; }
+  상태표시('멈춤', '');
+  $('stopBtn').style.display = 'none';
+  $('startBtn').style.display = 'block';
+  $('startBtn').textContent = '다시 시작';
+});
+
+/* =====================================================================
+   ②  MQTT 연결 · 전송 · 수신
+   ---------------------------------------------------------------------
+   MQTT는 "우편함(토픽)에 편지를 넣으면(publish) 그 우편함을 구독한
+   사람이 받아보는(subscribe)" 방식입니다. 서버 코드를 짤 필요가 없습니다.
+   ===================================================================== */
+function 연결하기() {
+  const 보낼토픽 = `khu/pcomp/${내ID}/sensor`;   // 폰 → 트윈
+  const 받을토픽 = `khu/pcomp/${내ID}/cmd`;      // 트윈 → 폰 (양방향)
+  $('topic').textContent = 보낼토픽;
+
+  상태표시('연결 중…', '');
+  client = mqtt.connect(BROKER, {
+    clientId: 'phone-' + 내ID + '-' + Math.random().toString(16).slice(2, 8), // 겹치면 서로 끊기므로 무작위
+    reconnectPeriod: 2000,   // 끊기면 2초마다 자동 재연결
+    connectTimeout: 8000,
+    clean: true
+  });
+
+  client.on('connect', () => {
+    상태표시('연결됨 ✔', 'on');
+    client.subscribe(받을토픽);
+    if (타이머) clearInterval(타이머);
+    타이머 = setInterval(보내기, 전송간격);   // 여기서 주기적으로 전송이 시작됩니다
+  });
+
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('offline',   () => 상태표시('연결 끊김', 'err'));
+  client.on('error', (e) => { 상태표시('오류: ' + e.message, 'err'); });
+
+  // 노트북(트윈)에서 온 명령 받기
+  client.on('message', (t, payload) => {
+    try {
+      const cmd = JSON.parse(payload.toString());
+      // 토스트를 한 번만 띄우도록 문구를 먼저 합칩니다
+      let 알림 = '';
+      if (cmd.vibrate) {
+        if (navigator.vibrate) navigator.vibrate(cmd.vibrate);   // 안드로이드에서 진동
+        알림 = '📳 진동 ' + cmd.vibrate + 'ms';
+      }
+      if (cmd.message) 알림 = (알림 ? 알림 + ' · ' : '💬 ') + cmd.message;
+      if (알림) 토스트(알림);
+    } catch (e) { console.warn('명령 해석 실패', e); }
+  });
+}
+
+function 보내기() {
+  if (!client || !client.connected) return;
+  최신.t = Date.now();                    // 보낸 시각 — 나중에 지연시간 계산에 씁니다
+  const 문자열 = JSON.stringify({
+    ax: +최신.ax.toFixed(2), ay: +최신.ay.toFixed(2), az: +최신.az.toFixed(2),
+    alpha: +최신.alpha.toFixed(1), beta: +최신.beta.toFixed(1), gamma: +최신.gamma.toFixed(1),
+    t: 최신.t
+  });
+  client.publish(`khu/pcomp/${내ID}/sensor`, 문자열);   // ← 실제 전송
+  보낸수++;
+  $('count').textContent = 보낸수;
+  if (보낸수 % 3 === 0) $('payload').textContent = 문자열;   // 화면 갱신은 조금 덜 자주
+}
+</script>
+</body>
+</html>

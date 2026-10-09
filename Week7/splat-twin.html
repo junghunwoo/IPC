@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스플랫 디지털 트윈 (Gaussian Splat 배경 + AI 메시 오브젝트 + MQTT)</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#101418;
+    font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  #안내 { position:fixed; left:0; right:0; top:0; z-index:10;
+    background:rgba(20,24,32,.85); color:#fff; padding:10px 14px; font-size:14px; line-height:1.5; }
+  #안내 b { color:#7fd1ff; }
+  #패널 { position:fixed; left:14px; top:72px; z-index:10; width:290px; max-height:calc(100% - 90px); overflow:auto;
+    background:rgba(20,24,32,.9); color:#eef2f8; border:1px solid #2e3849; border-radius:12px; padding:12px 14px; box-sizing:border-box; }
+  #패널 h2 { font-size:13px; margin:10px 0 6px; color:#7fd1ff; font-weight:600; }
+  #패널 h2:first-child { margin-top:0; }
+  label { font-size:12px; color:#9fb0c6; display:block; margin:6px 0 3px; }
+  input, select { width:100%; font:inherit; font-size:14px; padding:7px 8px; border-radius:8px;
+    border:1px solid #2e3849; background:#0e1219; color:#fff; box-sizing:border-box; }
+  input.id { font-size:18px; text-align:center; letter-spacing:.12em; }
+  button { width:100%; font:inherit; font-size:14px; font-weight:700; padding:9px; margin-top:7px;
+    border:0; border-radius:10px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button:hover { background:#1f57c8; }
+  button.gray { background:#3a4657; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; font-size:13px; }
+  .row .k { color:#9fb0c6; }
+  .row .v { font-variant-numeric:tabular-nums; font-weight:700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#666; margin-right:6px; }
+  .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; }
+  .dot.err { background:#ff7676; }
+  hr { border:0; border-top:1px solid #2e3849; margin:10px 0; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#9fe8b4;
+    background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; line-height:1.5; margin-top:6px; }
+  #상태 { position:fixed; right:14px; top:72px; z-index:10;
+    background:rgba(20,24,32,.9); color:#fff; border:1px solid #2e3849; border-radius:12px;
+    padding:14px 20px; font-size:22px; font-weight:800; }
+  #로딩 { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:5; color:#9fb0c6; font-size:15px;
+    background:rgba(20,24,32,.8); padding:10px 16px; border-radius:10px; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+  small { color:#9fb0c6; font-size:11px; }
+</style>
+</head>
+<body>
+
+<div id="안내">
+  <b>스플랫 디지털 트윈</b> — 폰(<code>phone-publish.html</code>)이나 ESP32가 보낸 센서 값을 MQTT로 받아
+  <b>스캔한 내 공간(Gaussian Splat)</b> 안의 <b>오브젝트(AI 메시 GLB 또는 분리한 스플랫)</b>를 실시간으로 움직입니다.<br>
+  왼쪽에서 배경·오브젝트 파일을 고르고, <b>폰과 똑같은 ID</b>로 "연결"을 누르세요. 👉 파일 주소를 내 GitHub Pages의 <code>assets/…</code> 로 바꾸면 내 공간이 됩니다.
+</div>
+
+<div id="패널">
+  <h2>① 배경 — 스캔한 공간 (.spz / .ply)</h2>
+  <label>스플랫 파일 주소 <small>(Scaniverse → SuperSplat 정리 → SPZ 내보내기)</small></label>
+  <input id="bgUrl" value="https://sparkjs.dev/assets/splats/forge.spz">
+  <h2>② 오브젝트 — 움직일 실물</h2>
+  <label>종류</label>
+  <select id="objType">
+    <option value="glb">AI 메시 GLB (Meshy 등)</option>
+    <option value="splat">분리한 스플랫 (.spz, SuperSplat Separate)</option>
+    <option value="box">임시 박스 (파일 없이 테스트)</option>
+  </select>
+  <label>오브젝트 파일 주소</label>
+  <input id="objUrl" value="https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@main/Models/Duck/glTF-Binary/Duck.glb">
+  <label>오브젝트 위치 x, y, z (m) · 크기 배율</label>
+  <input id="objPos" value="1.2, 0, 0, 0.6">
+  <label>센서 값 → 움직임</label>
+  <select id="mapMode">
+    <option value="rotate">회전 — beta 를 0~90° 로 잘라 y축 회전 (문·뚜껑)</option>
+    <option value="slide">이동 — beta 를 0~0.5 m 로 바꿔 x축 이동 (서랍)</option>
+    <option value="tilt">기울기 — beta·gamma 그대로 x·z축 회전 (샌드백·의자)</option>
+  </select>
+  <button id="loadBtn">장면 불러오기</button>
+
+  <h2>③ MQTT 연결</h2>
+  <label>폰/ESP32 에서 쓴 것과 같은 ID</label>
+  <input id="idInput" class="id" maxlength="12" placeholder="예: 1234">
+  <button id="connBtn">연결</button>
+  <button id="disconnBtn" class="gray" style="display:none">연결 끊기</button>
+  <button id="simBtn" class="gray">폰 없이 테스트 (시뮬레이션)</button>
+  <hr>
+  <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+  <div class="row"><span class="k">받은 메시지</span><span class="v" id="count">0</span></div>
+  <div class="row"><span class="k">지연(latency)</span><span class="v" id="latency">– ms</span></div>
+  <div id="payload">아직 받은 값이 없습니다.</div>
+</div>
+
+<div id="상태">닫힘</div>
+<div id="로딩">장면을 불러오는 중…</div>
+
+<!-- =====================================================================
+     라이브러리 (CDN). 버전을 바꾸지 마세요 — AI가 다른 버전을 제안해도 이 세 줄은 그대로 둡니다.
+     Spark 는 three 0.180 이상과 three/addons/ 매핑이 반드시 필요합니다.
+     ===================================================================== -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.1.0/dist/spark.module.js"
+  }
+}
+</script>
+<!-- MQTT.js 는 일반 스크립트로 먼저 읽습니다 (전역 mqtt) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+
+/* =====================================================================
+   ①  여기를 바꿔보세요 — 브로커·토픽 규약 (수업 공통, 폰·ESP32 와 같아야 합니다)
+   ===================================================================== */
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';           // 공개 브로커 (인증 없음)
+// EMQX Cloud Serverless 를 쓰면 아래처럼 바꿉니다 (조교 ESP32 세션 참고)
+// const BROKER = 'wss://xxxx.ala.asia-southeast1.emqxsl.com:8084/mqtt';
+// const AUTH = { username: 'im2102', password: '…' };
+const AUTH = {};
+const 토픽센서 = id => `khu/pcomp/${id}/sensor`;          // 폰/ESP32 → 트윈
+
+/* =====================================================================
+   ②  3D 장면 — 카메라·렌더러·Spark(스플랫 렌더러)·조명
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 200);
+camera.position.set(2.5, 1.6, 3.5);
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.8, 0);
+
+scene.add(new SparkRenderer({ renderer }));                 // 스플랫은 이 한 줄이 그립니다
+scene.add(new THREE.AmbientLight(0xffffff, 0.9));           // 스플랫은 조명이 필요 없지만 GLB 는 필요합니다
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(2, 4, 3); scene.add(sun);
+scene.add(new THREE.GridHelper(10, 20, 0x334455, 0x223344));
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* =====================================================================
+   ③  배경(스플랫)과 오브젝트 불러오기
+   ===================================================================== */
+let 배경 = null;        // SplatMesh
+let 오브젝트 = null;    // THREE.Group — 안에 GLB/스플랫/박스가 들어갑니다 (경첩 역할, 4주차 Group 개념)
+let mixer = null;
+
+function 지우기(o) { if (o) { scene.remove(o); if (o.dispose) o.dispose(); } }
+
+async function 장면불러오기() {
+  $('로딩').style.display = 'block'; $('로딩').textContent = '배경 스플랫을 불러오는 중…';
+  지우기(배경); 지우기(오브젝트); 배경 = 오브젝트 = null; mixer = null;
+
+  // 배경: Scaniverse/SuperSplat 파일은 대개 Y축이 아래를 향합니다 → X축 180° 회전으로 바로 세웁니다
+  const bgUrl = $('bgUrl').value.trim();
+  if (bgUrl) {
+    배경 = new SplatMesh({
+      url: bgUrl,
+      onProgress: e => { if (e.lengthComputable) $('로딩').textContent = `배경 ${Math.round(e.loaded / e.total * 100)}%`; },
+      onLoad: () => { $('로딩').textContent = '오브젝트를 불러오는 중…'; }
+    });
+    배경.quaternion.set(1, 0, 0, 0);   // 👉 화면이 뒤집혀 보이면 이 줄을 주석 처리해 보세요
+    scene.add(배경);
+  }
+
+  // 오브젝트: Group 을 "경첩" 자리에 두고, 안의 모델을 밀어 넣습니다
+  const [px, py, pz, s] = $('objPos').value.split(',').map(v => parseFloat(v) || 0);
+  const 배율 = s || 1;
+  오브젝트 = new THREE.Group();
+  오브젝트.position.set(px, py, pz);
+  scene.add(오브젝트);
+
+  const type = $('objType').value, url = $('objUrl').value.trim();
+  try {
+    if (type === 'glb' && url) {
+      const gltf = await new GLTFLoader().loadAsync(url);
+      const m = gltf.scene;
+      // GLB 크기를 1m 기준으로 맞춘 뒤 배율 적용 (Meshy 결과물은 크기가 제각각입니다)
+      const box = new THREE.Box3().setFromObject(m); const size = new THREE.Vector3(); box.getSize(size);
+      const k = (1 / Math.max(size.x, size.y, size.z)) * 배율; m.scale.setScalar(k);
+      box.setFromObject(m); m.position.y -= box.min.y;      // 바닥에 딱 붙이기
+      오브젝트.add(m);
+      if (gltf.animations.length) { mixer = new THREE.AnimationMixer(m); mixer.clipAction(gltf.animations[0]).play(); }
+    } else if (type === 'splat' && url) {
+      const sm = new SplatMesh({ url });
+      sm.quaternion.set(1, 0, 0, 0); sm.scale.setScalar(배율);
+      오브젝트.add(sm);
+    } else {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.8 * 배율, 1.0 * 배율, 0.05 * 배율),
+        new THREE.MeshStandardMaterial({ color: 0xe0a040, roughness: 0.7 }));
+      m.position.set(0.4 * 배율, 0.5 * 배율, 0);                // 문짝처럼: 경첩(Group 원점)에서 옆으로 밀기
+      오브젝트.add(m);
+    }
+  } catch (e) {
+    console.error(e); alert('오브젝트를 불러오지 못했습니다: ' + e.message);
+  }
+  $('로딩').style.display = 'none';
+}
+$('loadBtn').addEventListener('click', 장면불러오기);
+장면불러오기();
+
+/* =====================================================================
+   ④  센서 값 → 움직임  (👉 여기를 바꿔보세요)
+   ===================================================================== */
+const 열림기준 = 45;            // 회전 모드에서 이 각도(도)를 넘으면 "열림"
+let 목표 = { rot: 0, x: 0, tx: 0, tz: 0 }, 현재 = { rot: 0, x: 0, tx: 0, tz: 0 };
+const 가두기 = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function 센서반영(d) {
+  const beta = Math.abs(d.beta || 0), gamma = d.gamma || 0;
+  const mode = $('mapMode').value;
+  if (mode === 'rotate')      { 목표.rot = 가두기(beta, 0, 90); }
+  else if (mode === 'slide')  { 목표.x = 가두기(beta, 0, 90) / 90 * 0.5; }
+  else                        { 목표.tx = 가두기(d.beta || 0, -45, 45); 목표.tz = 가두기(gamma, -45, 45); }
+  const 열림 = mode === 'rotate' ? beta > 열림기준 : mode === 'slide' ? beta > 열림기준 : Math.abs(gamma) > 15;
+  $('상태').textContent = 열림 ? '열림' : '닫힘';
+  $('상태').style.color = 열림 ? '#ffd166' : '#fff';
+}
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const k = 0.15;                                   // 👉 1 이면 즉시 반응(떨림), 0.05 면 느긋
+  현재.rot += (목표.rot - 현재.rot) * k; 현재.x += (목표.x - 현재.x) * k;
+  현재.tx += (목표.tx - 현재.tx) * k;  현재.tz += (목표.tz - 현재.tz) * k;
+  if (오브젝트) {
+    const mode = $('mapMode').value; const [px] = $('objPos').value.split(',').map(v => parseFloat(v) || 0);
+    if (mode === 'rotate')     { 오브젝트.rotation.set(0, -THREE.MathUtils.degToRad(현재.rot), 0); 오브젝트.position.x = px; }
+    else if (mode === 'slide') { 오브젝트.rotation.set(0, 0, 0); 오브젝트.position.x = px + 현재.x; }
+    else { 오브젝트.rotation.set(THREE.MathUtils.degToRad(현재.tx), 0, THREE.MathUtils.degToRad(현재.tz)); 오브젝트.position.x = px; }
+  }
+  if (mixer) mixer.update(clock.getDelta());
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+/* =====================================================================
+   ⑤  MQTT 구독 (twin-subscribe.html 과 동일)
+   ===================================================================== */
+let client = null, 받은수 = 0, 시뮬 = null;
+function 상태표시(t, cls) { $('connState').textContent = t; $('dot').className = 'dot ' + (cls || ''); }
+
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+$('connBtn').addEventListener('click', () => {
+  const id = $('idInput').value.trim();
+  if (!id) { alert('폰과 같은 ID를 입력하세요'); return; }
+  localStorage.setItem('khu_pcomp_id', id);
+  if (client) client.end(true);
+  상태표시('연결 중…', '');
+  client = mqtt.connect(BROKER, { ...AUTH,
+    clientId: 'splat-twin-' + id + '-' + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 2000, connectTimeout: 8000, clean: true });
+  client.on('connect', () => { 상태표시('연결됨 ✔', 'on'); client.subscribe(토픽센서(id));
+    $('connBtn').style.display = 'none'; $('disconnBtn').style.display = 'block'; });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('error', e => { 상태표시('오류: ' + e.message, 'err'); });
+  client.on('message', (topic, payload) => {
+    let d; try { d = JSON.parse(payload.toString()); } catch (e) { return; }
+    받은수++; $('count').textContent = 받은수;
+    if (d.t) $('latency').textContent = (Date.now() - d.t) + ' ms';
+    $('payload').textContent = payload.toString();
+    센서반영(d);
+  });
+});
+$('disconnBtn').addEventListener('click', () => {
+  if (client) client.end(true); client = null; 상태표시('끊김', '');
+  $('connBtn').style.display = 'block'; $('disconnBtn').style.display = 'none';
+});
+
+// 폰 없이 테스트: 6초 주기로 가짜 beta 값을 진짜와 같은 경로(센서반영)로 넣습니다
+$('simBtn').addEventListener('click', () => {
+  if (시뮬) { clearInterval(시뮬); 시뮬 = null; $('simBtn').textContent = '폰 없이 테스트 (시뮬레이션)'; return; }
+  $('simBtn').textContent = '시뮬레이션 끄기';
+  const t0 = Date.now();
+  시뮬 = setInterval(() => {
+    const p = (Date.now() - t0) / 6000 * Math.PI * 2;
+    const d = { ax: 0, ay: 0, az: 9.8, alpha: 0, beta: +(45 + 45 * Math.sin(p) + (Math.random() - .5) * 4).toFixed(1),
+      gamma: +(30 * Math.sin(p * 0.5)).toFixed(1), t: Date.now() };
+    받은수++; $('count').textContent = 받은수; $('payload').textContent = JSON.stringify(d) + ' (시뮬레이션)';
+    센서반영(d);
+  }, 100);
+});
+</script>
+</body>
+</html>

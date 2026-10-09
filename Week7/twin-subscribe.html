@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디지털 트윈 (MQTT 구독 → 3D 갱신)</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden;
+    font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  #안내 { position:fixed; left:0; right:0; top:0; z-index:10;
+    background:rgba(20,24,32,.85); color:#fff; padding:10px 14px; font-size:14px; line-height:1.5; }
+  #안내 b { color:#7fd1ff; }
+  #패널 { position:fixed; left:14px; top:72px; z-index:10; width:270px;
+    background:rgba(20,24,32,.88); color:#eef2f8; border:1px solid #2e3849; border-radius:12px; padding:12px 14px; }
+  #패널 h2 { font-size:13px; margin:0 0 8px; color:#7fd1ff; font-weight:600; }
+  label { font-size:13px; color:#9fb0c6; display:block; margin-bottom:5px; }
+  input { width:100%; font:inherit; font-size:18px; padding:9px; border-radius:8px;
+    border:1px solid #2e3849; background:#0e1219; color:#fff; text-align:center; letter-spacing:.12em; box-sizing:border-box; }
+  button { width:100%; font:inherit; font-size:15px; font-weight:700; padding:11px; margin-top:9px;
+    border:0; border-radius:10px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button:hover { background:#1f57c8; }
+  button.gray { background:#3a4657; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; font-size:13px; }
+  .row .k { color:#9fb0c6; }
+  .row .v { font-variant-numeric:tabular-nums; font-weight:700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#666; margin-right:6px; }
+  .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; }
+  .dot.err { background:#ff7676; }
+  hr { border:0; border-top:1px solid #2e3849; margin:11px 0; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#9fe8b4;
+    background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; line-height:1.5; margin-top:6px; }
+  #문상태 { position:fixed; right:14px; top:72px; z-index:10;
+    background:rgba(20,24,32,.88); color:#fff; border:1px solid #2e3849; border-radius:12px;
+    padding:14px 20px; font-size:22px; font-weight:800; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+</style>
+</head>
+<body>
+
+<div id="안내">
+  <b>디지털 트윈</b> — 폰(<code>phone-publish.html</code>)이 보낸 센서 값을 MQTT로 받아 방 모델을 실시간으로 움직입니다.<br>
+  왼쪽에 <b>폰과 똑같은 ID</b>를 넣고 "연결"을 누르세요. 👉 아래 코드의 OBJECTS 목록을 고치면 내 방이 됩니다.
+</div>
+
+<div id="패널">
+  <h2>MQTT 연결</h2>
+  <label>폰에서 쓴 것과 같은 ID</label>
+  <input id="idInput" maxlength="12" placeholder="예: 1234">
+  <button id="connBtn">연결</button>
+  <button id="disconnBtn" class="gray" style="display:none">연결 끊기</button>
+  <hr>
+  <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+  <div class="row"><span class="k">받은 메시지</span><span class="v" id="count">0</span></div>
+  <div class="row"><span class="k">수신 속도</span><span class="v" id="rate">0 /s</span></div>
+  <div class="row"><span class="k">지연(latency)</span><span class="v" id="latency">– ms</span></div>
+  <div id="payload">아직 받은 값이 없습니다.</div>
+</div>
+
+<div id="문상태">문 닫힘</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<!-- MQTT.js 는 일반 스크립트로 먼저 읽습니다 (전역 mqtt) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =====================================================================
+   ①  여기를 바꿔보세요 — 내 방 가구 목록 (room-template.html 과 같은 형식)
+   ===================================================================== */
+const OBJECTS = [
+  { name: '책상',   size: [1.2, 0.7,  0.6], pos: [-1.2, 0.35, -1.6], color: 0x8b5a2b },
+  { name: '의자',   size: [0.45, 0.9, 0.45], pos: [-1.2, 0.45, -0.9], color: 0x4a6fa5 },
+  { name: '침대',   size: [1.0, 0.45, 2.0], pos: [ 1.4, 0.225, -0.8], color: 0xd9a86c },
+  { name: '책장',   size: [0.9, 1.8,  0.3], pos: [-2.0, 0.90,  1.0], color: 0x6b4f3a },
+];
+const ROOM = { width: 6, depth: 6, height: 2.6 };
+
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+
+/* ---- 어떤 센서 값으로 문을 움직일지 고르는 곳 ----
+   👉 여기를 바꿔보세요: 'beta'(앞뒤 기울기) 대신 'gamma'(좌우 기울기)로 바꿔보세요. */
+const 문축 = 'beta';
+const 열림기준 = 45;   // 이 각도(도)를 넘으면 "문 열림"으로 판정
+
+/* =====================================================================
+   ②  3D 장면 만들기 (room-template.html 과 같은 보일러플레이트)
+   ===================================================================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe6ef);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5, 4, 6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+sun.position.set(4, 7, 5); sun.castShadow = true; scene.add(sun);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(ROOM.width, ROOM.depth),
+  new THREE.MeshStandardMaterial({ color: 0xe8e0d5 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+function 벽만들기(w, h, pos, rotY) {
+  const 벽 = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({ color: 0xf5f2ec, side: THREE.DoubleSide }));
+  벽.position.set(...pos); 벽.rotation.y = rotY; 벽.receiveShadow = true; scene.add(벽);
+}
+벽만들기(ROOM.width, ROOM.height, [0, ROOM.height/2, -ROOM.depth/2], 0);
+벽만들기(ROOM.depth, ROOM.height, [-ROOM.width/2, ROOM.height/2, 0], Math.PI/2);
+
+const grid = new THREE.GridHelper(ROOM.width, ROOM.width, 0xaaaaaa, 0xcccccc);
+grid.position.y = 0.001; scene.add(grid);
+
+const objects = {};
+for (const item of OBJECTS) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(...item.size),
+    new THREE.MeshStandardMaterial({ color: item.color }));
+  mesh.position.set(...item.pos);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  mesh.userData.name = item.name;
+  scene.add(mesh);
+  objects[item.name] = mesh;
+}
+
+// --- 문 (경첩에서 회전하도록 Group 사용) ---
+const DOOR = { width: 0.9, height: 2.0, thickness: 0.06 };
+const door = new THREE.Group();
+door.position.set(1.2, 0, -ROOM.depth/2 + 0.03);
+const doorPanel = new THREE.Mesh(
+  new THREE.BoxGeometry(DOOR.width, DOOR.height, DOOR.thickness),
+  new THREE.MeshStandardMaterial({ color: 0xa0522d }));
+doorPanel.position.set(DOOR.width/2, DOOR.height/2, 0);
+doorPanel.castShadow = true;
+door.add(doorPanel);
+scene.add(door);
+
+// --- 폰 모형 (센서 방향을 그대로 흉내내는 납작한 상자) ---
+const phone = new THREE.Mesh(
+  new THREE.BoxGeometry(0.36, 0.72, 0.03),
+  new THREE.MeshStandardMaterial({ color: 0x222834 }));
+phone.position.set(0, 1.5, 1.6);
+phone.castShadow = true;
+phone.userData.name = '폰';
+scene.add(phone);
+// 폰 화면(밝은 면) 표시
+const screen = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.30, 0.62),
+  new THREE.MeshStandardMaterial({ color: 0x7fd1ff, emissive: 0x1a4a66 }));
+screen.position.z = 0.017;
+phone.add(screen);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* =====================================================================
+   ③  센서 값 → 3D 반영
+   ---------------------------------------------------------------------
+   센서 값이 툭툭 튀므로 곧바로 반영하지 않고, 목표값을 향해 조금씩
+   따라가게(보간) 하면 훨씬 부드럽습니다.
+   ===================================================================== */
+let 목표문각도 = 0;                              // 센서가 원하는 각도
+let 현재문각도 = 0;                              // 실제로 그려지는 각도
+let 목표회전 = { beta: 0, gamma: 0, alpha: 0 };
+
+function 센서반영(d) {
+  // (1) 문: 기울기의 절대값을 0~90도로 잘라 문 각도로 사용
+  const 값 = Math.abs(d[문축] || 0);
+  목표문각도 = Math.max(0, Math.min(90, 값));
+
+  // (2) 폰 모형: 폰의 실제 기울기를 그대로 따라 하기
+  목표회전.beta  = d.beta  || 0;
+  목표회전.gamma = d.gamma || 0;
+  목표회전.alpha = d.alpha || 0;
+}
+
+const 라디안으로 = (d) => d * Math.PI / 180;
+
+// (문 상태 표시에 쓰는 변수 — animate() 보다 먼저 선언해야 합니다)
+const 문상태Div = document.getElementById('문상태');
+let 이전상태 = null;
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  // 부드럽게 따라가기: 현재값 + (목표값 - 현재값) * 0.15
+  // 👉 여기를 바꿔보세요: 0.15 를 1 로 하면 즉시 반응(하지만 덜덜 떨림), 0.05 면 더 느긋합니다.
+  현재문각도 += (목표문각도 - 현재문각도) * 0.15;
+  door.rotation.y = -라디안으로(현재문각도);
+
+  phone.rotation.x += (라디안으로(목표회전.beta) - phone.rotation.x) * 0.15;
+  phone.rotation.y += (라디안으로(-목표회전.gamma) - phone.rotation.y) * 0.15;
+
+  문상태갱신();
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+function 문상태갱신() {
+  const 열림 = 현재문각도 > 열림기준;
+  const 글자 = 열림 ? '문 열림' : '문 닫힘';
+  if (글자 !== 이전상태) {
+    이전상태 = 글자;
+    문상태Div.textContent = 글자;
+    문상태Div.style.color = 열림 ? '#ffb020' : '#ffffff';
+  }
+}
+
+/* =====================================================================
+   ④  MQTT 구독
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+
+let client = null, 받은수 = 0, 최근수신시각 = [];
+
+function 상태표시(글자, 종류) {
+  $('connState').textContent = 글자;
+  $('dot').className = 'dot' + (종류 ? ' ' + 종류 : '');
+}
+
+$('connBtn').addEventListener('click', () => {
+  const id = ($('idInput').value || '').trim();
+  if (!id) { alert('폰에서 사용한 ID를 입력하세요.'); return; }
+  localStorage.setItem('khu_pcomp_id', id);
+
+  상태표시('연결 중…', '');
+  client = mqtt.connect(BROKER, {
+    clientId: 'twin-' + id + '-' + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 2000,   // 끊기면 mqtt.js 가 알아서 다시 붙습니다
+    connectTimeout: 8000,
+    clean: true
+  });
+
+  client.on('connect', () => {
+    상태표시('연결됨 ✔', 'on');
+    client.subscribe(`khu/pcomp/${id}/sensor`);   // ← 폰이 보내는 우편함을 구독
+  });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('offline',   () => 상태표시('연결 끊김', 'err'));
+  client.on('error', (e) => 상태표시('오류', 'err'));
+
+  client.on('message', (topic, payload) => {
+    let d;
+    try { d = JSON.parse(payload.toString()); }
+    catch (e) { console.warn('JSON 해석 실패', e); return; }
+
+    센서반영(d);
+
+    받은수++;
+    $('count').textContent = 받은수;
+    if (받은수 % 3 === 0) $('payload').textContent = payload.toString();
+
+    // 지연시간 = 지금 시각 - 폰이 보낸 시각 (두 기기 시계가 어긋나면 부정확할 수 있습니다)
+    if (d.t) $('latency').textContent = (Date.now() - d.t) + ' ms';
+
+    // 수신 속도: 최근 1초 동안 몇 개 받았는지 세기
+    const now = performance.now();
+    최근수신시각.push(now);
+    while (최근수신시각.length && now - 최근수신시각[0] > 1000) 최근수신시각.shift();
+    $('rate').textContent = 최근수신시각.length + ' /s';
+  });
+
+  $('connBtn').style.display = 'none';
+  $('disconnBtn').style.display = 'block';
+});
+
+$('disconnBtn').addEventListener('click', () => {
+  if (client) { client.end(true); client = null; }
+  상태표시('연결 끊음', '');
+  $('disconnBtn').style.display = 'none';
+  $('connBtn').style.display = 'block';
+  $('connBtn').textContent = '다시 연결';
+});
+
+window.twin = { scene, camera, renderer, objects, door, phone };
+</script>
+</body>
+</html>

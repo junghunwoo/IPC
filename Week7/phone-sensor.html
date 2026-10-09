@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>폰 센서 값 보기</title>
+<style>
+  :root { --bg:#12161f; --card:#1d2431; --line:#2e3849; --hi:#7fd1ff; --ok:#37d67a; --warn:#ffb020; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 14px 14px 40px; background: var(--bg); color: #eef2f8;
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 19px; margin: 4px 0 6px; }
+  p.desc { font-size: 14px; line-height: 1.5; color: #b9c4d4; margin: 0 0 14px; }
+  #warn {
+    display: none; background: #4a2a00; border: 1px solid var(--warn); color: #ffd88a;
+    padding: 10px 12px; border-radius: 10px; font-size: 14px; line-height: 1.5; margin-bottom: 12px;
+  }
+  #startBtn {
+    width: 100%; font: inherit; font-size: 20px; font-weight: 700; padding: 18px;
+    border: 0; border-radius: 14px; background: #2f6fed; color: #fff; cursor: pointer;
+  }
+  #startBtn:disabled { background: #3a4657; color: #94a2b6; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-top: 12px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; color: var(--hi); font-weight: 600; letter-spacing: .02em; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 0; }
+  .row .k { font-size: 14px; color: #9fb0c6; }
+  .row .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .unit { font-size: 13px; color: #8b9ab0; margin-left: 3px; font-weight: 400; }
+  /* 기울기 표시기: 회색 원 안의 파란 공이 폰 기울기를 따라 움직입니다 */
+  #tiltBox { position: relative; width: 190px; height: 190px; margin: 6px auto 2px;
+    border-radius: 50%; background: #161c27; border: 2px solid var(--line); }
+  #tiltBox::before, #tiltBox::after { content: ""; position: absolute; background: #2e3849; }
+  #tiltBox::before { left: 0; right: 0; top: 50%; height: 1px; }
+  #tiltBox::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+  #ball { position: absolute; width: 40px; height: 40px; border-radius: 50%;
+    background: var(--hi); left: 50%; top: 50%; margin: -20px 0 0 -20px;
+    transition: transform .06s linear; box-shadow: 0 0 14px rgba(127,209,255,.5); }
+  #status { font-size: 14px; color: var(--ok); text-align: center; margin-top: 10px; min-height: 20px; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:13px; }
+</style>
+</head>
+<body>
+
+<h1>📱 내 폰 센서 값 보기</h1>
+<p class="desc">
+  "센서 시작"을 누르면 폰의 <b>가속도</b>와 <b>방향(기울기)</b> 값이 실시간으로 보입니다.<br>
+  폰을 이리저리 기울여 보면서 어떤 숫자가 어떻게 변하는지 관찰해 보세요.
+</p>
+
+<div id="warn"></div>
+
+<button id="startBtn">센서 시작</button>
+<div id="status"></div>
+
+<div class="card">
+  <h2>기울기 표시기</h2>
+  <div id="tiltBox"><div id="ball"></div></div>
+</div>
+
+<div class="card">
+  <h2>방향 (DeviceOrientation · 단위: 도)</h2>
+  <div class="row"><span class="k">alpha — 나침반처럼 좌우 회전</span><span class="v" id="alpha">–<span class="unit">°</span></span></div>
+  <div class="row"><span class="k">beta — 앞뒤로 기울이기</span><span class="v" id="beta">–<span class="unit">°</span></span></div>
+  <div class="row"><span class="k">gamma — 좌우로 기울이기</span><span class="v" id="gamma">–<span class="unit">°</span></span></div>
+</div>
+
+<div class="card">
+  <h2>가속도 (DeviceMotion · 단위: m/s², 중력 포함)</h2>
+  <div class="row"><span class="k">ax (좌우)</span><span class="v" id="ax">–</span></div>
+  <div class="row"><span class="k">ay (위아래)</span><span class="v" id="ay">–</span></div>
+  <div class="row"><span class="k">az (앞뒤)</span><span class="v" id="az">–</span></div>
+</div>
+
+<p class="desc" style="margin-top:14px">
+  💡 폰을 책상에 평평히 두면 <code>ay</code> 또는 <code>az</code> 가 약 <b>9.8</b> 이 됩니다.
+  이것이 <b>중력</b>입니다. 폰을 세우면 그 9.8이 다른 축으로 옮겨갑니다.
+</p>
+
+<script>
+/* =====================================================================
+   ①  HTTPS 확인
+   ---------------------------------------------------------------------
+   브라우저는 안전을 위해 "https://" 로 열린 페이지에서만 센서를 켜 줍니다.
+   파일을 더블클릭해서 연 경우(file://)나 http:// 인 경우에는 동작하지 않습니다.
+   → GitHub Pages 같은 https 주소에 올려서 폰으로 접속하세요.
+   (예외: 내 컴퓨터에서 여는 localhost 는 허용됩니다.)
+   ===================================================================== */
+const 로컬 = ['localhost', '127.0.0.1'].includes(location.hostname);
+const 안전 = (location.protocol === 'https:') || 로컬;
+if (!안전) {
+  const w = document.getElementById('warn');
+  w.style.display = 'block';
+  const 파일로열림 = (location.protocol === 'file:');
+  w.innerHTML = '⚠️ <b>센서는 HTTPS에서만 동작합니다.</b><br>' +
+    (파일로열림
+      ? '지금은 파일을 <b>직접 연 상태</b>(<code>file://</code>)입니다. 노트북에서는 값이 보일 수도 있지만, <b>폰에서는 동작하지 않습니다.</b><br>'
+      : '지금 주소: <code>' + location.protocol + '//' + location.host + '</code><br>') +
+    'GitHub Pages 등 <code>https://</code> 주소로 올린 뒤 폰에서 그 주소로 접속하세요.';
+}
+
+/* ---- 화면에 숫자를 그려주는 짧은 도우미 함수들 ---- */
+const $ = (id) => document.getElementById(id);
+const 소수1 = (n) => (n === null || n === undefined || Number.isNaN(n)) ? '–' : n.toFixed(1);
+
+function 보이기(id, 값, 단위) {
+  $(id).innerHTML = 소수1(값) + (단위 ? '<span class="unit">' + 단위 + '</span>' : '');
+}
+
+/* =====================================================================
+   ②  센서 시작 — 반드시 "사용자가 버튼을 누른 뒤"에 실행해야 합니다
+   ---------------------------------------------------------------------
+   iOS 13 이상 아이폰은 DeviceMotionEvent.requestPermission() 으로
+   사용자에게 허락을 받아야 하고, 이 함수는 "버튼 클릭 같은 사용자 동작"
+   안에서 불러야만 동작합니다. 그래서 페이지 로딩 시 자동 실행은 안 됩니다.
+   ===================================================================== */
+$('startBtn').addEventListener('click', async () => {
+  const 상태 = $('status');
+  try {
+    // 아이폰(iOS 13+)인 경우: 권한 요청 팝업 띄우기
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const 결과 = await DeviceMotionEvent.requestPermission();
+      if (결과 !== 'granted') { 상태.style.color = '#ff8080'; 상태.textContent = '권한이 거부되었습니다. Safari 설정에서 "동작 및 방향 접근"을 허용해 주세요.'; return; }
+    }
+    // 방향 센서도 아이폰에서는 따로 권한이 필요합니다
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      await DeviceOrientationEvent.requestPermission();
+    }
+
+    // 실제로 센서 값 듣기 시작
+    window.addEventListener('devicemotion', 가속도수신);
+    window.addEventListener('deviceorientation', 방향수신);
+
+    $('startBtn').disabled = true;
+    $('startBtn').textContent = '센서 작동 중 ✔';
+    상태.style.color = '#37d67a';
+    상태.textContent = '값이 바뀌지 않으면 폰을 흔들거나 기울여 보세요.';
+  } catch (e) {
+    상태.style.color = '#ff8080';
+    상태.textContent = '센서를 켜지 못했습니다: ' + e.message;
+  }
+});
+
+/* =====================================================================
+   ③  센서 값이 들어올 때마다 호출되는 함수들 (1초에 수십 번 호출됩니다)
+   ===================================================================== */
+function 가속도수신(e) {
+  // accelerationIncludingGravity = 중력이 포함된 가속도 (m/s²)
+  const a = e.accelerationIncludingGravity || {};
+  보이기('ax', a.x);
+  보이기('ay', a.y);
+  보이기('az', a.z);
+}
+
+function 방향수신(e) {
+  보이기('alpha', e.alpha, '°');
+  보이기('beta',  e.beta,  '°');
+  보이기('gamma', e.gamma, '°');
+
+  /* 기울기 표시기: beta(앞뒤), gamma(좌우) 를 공의 위치로 바꿉니다.
+     👉 여기를 바꿔보세요 — 아래 45 를 90 으로 바꾸면 공이 둔하게 움직입니다. */
+  const 최대각 = 45;
+  const 반지름 = 70;    // 공이 움직일 수 있는 최대 거리(px)
+  const 자르기 = (v) => Math.max(-1, Math.min(1, (v || 0) / 최대각));
+  const x = 자르기(e.gamma) * 반지름;
+  const y = 자르기(e.beta) * 반지름;
+  document.getElementById('ball').style.transform = `translate(${x}px, ${y}px)`;
+}
+
+/* 💡 다음 단계: phone-publish.html 에서는 이 값을 MQTT로 노트북에 보냅니다. */
+</script>
+</body>
+</html>

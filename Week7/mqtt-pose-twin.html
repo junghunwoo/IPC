@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MQTT 자세 트윈 — 구독한 메시지로 3D 모델의 자세(위치·회전)를 바꾸기</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#101418; font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  #안내 { position:fixed; left:0; right:0; top:0; z-index:10; background:rgba(20,24,32,.85); color:#fff; padding:10px 14px; font-size:14px; line-height:1.5; }
+  #안내 b { color:#7fd1ff; }
+  #패널 { position:fixed; left:14px; top:72px; z-index:10; width:300px; max-height:calc(100% - 90px); overflow:auto;
+    background:rgba(20,24,32,.9); color:#eef2f8; border:1px solid #2e3849; border-radius:12px; padding:12px 14px; box-sizing:border-box; }
+  #패널 h2 { font-size:13px; margin:10px 0 6px; color:#7fd1ff; } #패널 h2:first-child { margin-top:0; }
+  label { font-size:12px; color:#9fb0c6; display:block; margin:6px 0 3px; }
+  input, select { width:100%; font:inherit; font-size:13px; padding:7px 8px; border-radius:8px; border:1px solid #2e3849; background:#0e1219; color:#fff; box-sizing:border-box; }
+  input.id { font-size:18px; text-align:center; letter-spacing:.12em; }
+  button { width:100%; font:inherit; font-size:14px; font-weight:700; padding:9px; margin-top:7px; border:0; border-radius:10px; background:#2f6fed; color:#fff; cursor:pointer; }
+  button.gray { background:#3a4657; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; font-size:13px; } .row .k { color:#9fb0c6; } .row .v { font-variant-numeric:tabular-nums; font-weight:700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#666; margin-right:6px; } .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; } .dot.err { background:#ff7676; }
+  hr { border:0; border-top:1px solid #2e3849; margin:10px 0; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:#9fe8b4; background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; line-height:1.5; margin-top:6px; }
+  #자세 { position:fixed; right:14px; top:72px; z-index:10; background:rgba(20,24,32,.9); color:#fff; border:1px solid #2e3849; border-radius:12px; padding:12px 16px; font-family: ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.6; }
+  #자세 b { color:#f2a541; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+</style>
+</head>
+<body>
+<div id="안내">
+  <b>MQTT 자세 트윈</b> — 토픽 <code>khu/pcomp/{id}/pose</code>를 구독해, 메시지에 담긴 <b>자세(위치 x·y·z, 회전 rx·ry·rz)</b>대로 3D 모델을 움직입니다.
+  발행은 <code>mqtt-pose-send.html</code>(브라우저) · <code>push_pose.py</code>(노트북 파이썬) · MQTTX 어느 것이든 됩니다. 👉 브로커를 <b>공개 → 클라우드(EMQX Serverless)</b>로 바꿔 보세요.
+</div>
+
+<div id="패널">
+  <h2>① 브로커</h2>
+  <label>종류</label>
+  <select id="brokerKind">
+    <option value="public">공개 브로커 (broker.emqx.io, 인증 없음)</option>
+    <option value="cloud">클라우드 (EMQX Serverless, 계정 필요)</option>
+  </select>
+  <div id="cloudBox" style="display:none">
+    <label>주소 (wss://…emqxsl.com:8084/mqtt)</label><input id="cloudUrl" placeholder="wss/xxxx.ala.ap-southeast-1.emqxsl.com:8084/mqtt">
+    <label>사용자 이름</label><input id="cloudUser" placeholder="stu01">
+    <label>비밀번호</label><input id="cloudPass" type="password">
+  </div>
+  <h2>② 구독</h2>
+  <label>내 ID (발행 쪽과 같게)</label>
+  <input id="idInput" class="id" maxlength="12" placeholder="예: 1234">
+  <button id="connBtn">연결하고 구독</button>
+  <button id="disconnBtn" class="gray" style="display:none">연결 끊기</button>
+  <hr>
+  <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+  <div class="row"><span class="k">구독 토픽</span><span class="v" id="topic">–</span></div>
+  <div class="row"><span class="k">받은 메시지</span><span class="v" id="count">0</span></div>
+  <div class="row"><span class="k">지연(latency)</span><span class="v" id="latency">– ms</span></div>
+  <div id="payload">아직 받은 메시지가 없습니다.</div>
+  <h2>③ 모델</h2>
+  <label>종류</label>
+  <select id="modelKind"><option value="glb">GLB (오리 샘플 — 내 Meshy 파일로 바꾸기)</option><option value="box">박스</option></select>
+  <label>GLB 주소</label><input id="glbUrl" value="https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@main/Models/Duck/glTF-Binary/Duck.glb">
+  <button id="loadBtn" class="gray">모델 다시 불러오기</button>
+</div>
+
+<div id="자세">자세<br><b>x</b> 0.00 <b>y</b> 0.00 <b>z</b> 0.00<br><b>rx</b> 0 <b>ry</b> 0 <b>rz</b> 0</div>
+
+<!-- 라이브러리 (버전 고정, 바꾸지 마세요) -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+/* ===== 👉 여기를 바꿔보세요 — 토픽 규약과 메시지 형식 ============================
+   토픽: khu/pcomp/{id}/pose
+   메시지(JSON): {"x":0,"y":0,"z":0,"rx":0,"ry":45,"rz":0,"t":1690000000000}
+     x,y,z = 위치(m), rx,ry,rz = 회전(도), t = 보낸 시각(ms). 빠진 키는 이전 값을 유지합니다.
+   ============================================================================== */
+const PUBLIC_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const 토픽 = id => `khu/pcomp/${id}/pose`;
+
+const $ = id => document.getElementById(id);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0xe9f2f2);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.05, 100); camera.position.set(2.5, 1.8, 3.2);
+const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(innerWidth, innerHeight); document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement); controls.target.set(0, 0.5, 0);
+scene.add(new THREE.GridHelper(8, 16, 0x8aa0a0, 0xc5d3d3), new THREE.AxesHelper(1.2));
+scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(2, 4, 3); scene.add(sun);
+
+/* 모델: Group 안에 GLB 또는 박스. 자세는 Group 에 적용합니다 */
+const 모델 = new THREE.Group(); scene.add(모델);
+async function 모델불러오기() {
+  모델.clear();
+  if ($('modelKind').value === 'glb' && $('glbUrl').value.trim()) {
+    try {
+      const gltf = await new GLTFLoader().loadAsync($('glbUrl').value.trim());
+      const m = gltf.scene; const box = new THREE.Box3().setFromObject(m); const s = new THREE.Vector3(); box.getSize(s);
+      m.scale.setScalar(1 / Math.max(s.x, s.y, s.z)); box.setFromObject(m); m.position.y -= box.min.y; 모델.add(m); return;
+    } catch (e) { console.warn('GLB 실패, 박스로 대체', e); }
+  }
+  const b = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.5), new THREE.MeshStandardMaterial({ color: 0x8b5a2b, roughness: 0.6 })); b.position.y = 0.25;
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 16), new THREE.MeshStandardMaterial({ color: 0xf2a541 })); nose.rotation.x = Math.PI / 2; nose.position.set(0, 0.25, 0.4);
+  모델.add(b, nose);
+}
+$('loadBtn').addEventListener('click', 모델불러오기); 모델불러오기();
+
+/* 자세: 목표값을 받아 매 프레임 부드럽게 따라갑니다 */
+const 목표 = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 }, 현재 = { ...목표 };
+function 자세반영(d) {
+  for (const k of ['x', 'y', 'z', 'rx', 'ry', 'rz']) if (typeof d[k] === 'number') 목표[k] = d[k];
+  $('자세').innerHTML = `자세<br><b>x</b> ${목표.x.toFixed(2)} <b>y</b> ${목표.y.toFixed(2)} <b>z</b> ${목표.z.toFixed(2)}<br><b>rx</b> ${목표.rx.toFixed(0)} <b>ry</b> ${목표.ry.toFixed(0)} <b>rz</b> ${목표.rz.toFixed(0)}`;
+}
+renderer.setAnimationLoop(() => {
+  const k = 0.15;                       // 👉 1 이면 즉시, 0.05 면 느긋
+  for (const key in 목표) 현재[key] += (목표[key] - 현재[key]) * k;
+  모델.position.set(현재.x, 현재.y, 현재.z);
+  모델.rotation.set(THREE.MathUtils.degToRad(현재.rx), THREE.MathUtils.degToRad(현재.ry), THREE.MathUtils.degToRad(현재.rz));
+  controls.update(); renderer.render(scene, camera);
+});
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+/* MQTT 구독 */
+let client = null, 받은수 = 0;
+function 상태표시(t, cls) { $('connState').textContent = t; $('dot').className = 'dot ' + (cls || ''); }
+$('brokerKind').addEventListener('change', () => { $('cloudBox').style.display = $('brokerKind').value === 'cloud' ? 'block' : 'none'; });
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+$('connBtn').addEventListener('click', () => {
+  const id = $('idInput').value.trim(); if (!id) { alert('ID를 입력하세요'); return; }
+  localStorage.setItem('khu_pcomp_id', id);
+  const cloud = $('brokerKind').value === 'cloud';
+  const url = cloud ? $('cloudUrl').value.trim() : PUBLIC_BROKER;
+  const opts = { clientId: 'pose-twin-' + id + '-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 2000, connectTimeout: 8000, clean: true };
+  if (cloud) { opts.username = $('cloudUser').value.trim(); opts.password = $('cloudPass').value; }   // 클라우드 브로커는 계정이 필요합니다
+  if (client) client.end(true);
+  상태표시('연결 중…', ''); $('topic').textContent = 토픽(id);
+  client = mqtt.connect(url, opts);
+  client.on('connect', () => { 상태표시('연결됨 ✔ (' + (cloud ? '클라우드' : '공개') + ')', 'on'); client.subscribe(토픽(id)); $('connBtn').style.display = 'none'; $('disconnBtn').style.display = 'block'; });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('error', e => 상태표시('오류: ' + e.message, 'err'));
+  client.on('message', (topic, payload) => {
+    let d; try { d = JSON.parse(payload.toString()); } catch (e) { $('payload').textContent = '(JSON 아님) ' + payload.toString(); return; }
+    받은수++; $('count').textContent = 받은수; if (d.t) $('latency').textContent = (Date.now() - d.t) + ' ms';
+    $('payload').textContent = payload.toString(); 자세반영(d);
+  });
+});
+$('disconnBtn').addEventListener('click', () => { if (client) client.end(true); client = null; 상태표시('끊김', ''); $('connBtn').style.display = 'block'; $('disconnBtn').style.display = 'none'; });
+</script>
+</body>
+</html>

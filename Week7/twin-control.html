@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>트윈 제어판 — 센서 없이 MQTT 메시지로 3D 모델 움직이기</title>
+<style>
+  body { margin:0; min-height:100vh; background:#101418; color:#eef2f8; font-family: system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  header { background:rgba(20,24,32,.95); padding:12px 16px; font-size:14px; line-height:1.5; border-bottom:1px solid #2e3849; }
+  header b { color:#7fd1ff; }
+  main { max-width:720px; margin:0 auto; padding:16px; }
+  section { background:#161b22; border:1px solid #2e3849; border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+  h2 { font-size:14px; margin:0 0 10px; color:#7fd1ff; }
+  label { display:block; font-size:13px; color:#9fb0c6; margin:10px 0 4px; }
+  input[type=text] { width:100%; font:inherit; font-size:18px; padding:9px; border-radius:8px; border:1px solid #2e3849; background:#0e1219; color:#fff; text-align:center; letter-spacing:.12em; box-sizing:border-box; }
+  input[type=range] { width:100%; }
+  .v { float:right; color:#fff; font-variant-numeric:tabular-nums; }
+  button { font:inherit; font-size:14px; font-weight:700; padding:10px 14px; border:0; border-radius:10px; background:#2f6fed; color:#fff; cursor:pointer; margin:6px 6px 0 0; }
+  button.gray { background:#3a4657; } button.amber { background:#c47d12; }
+  .row { display:flex; justify-content:space-between; padding:3px 0; font-size:13px; } .row .k { color:#9fb0c6; } .row .v { font-weight:700; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#666; margin-right:6px; } .dot.on { background:#37d67a; box-shadow:0 0 8px #37d67a; } .dot.err { background:#ff7676; }
+  #payload { font-family: ui-monospace,Menlo,Consolas,monospace; font-size:12px; color:#9fe8b4; background:#0e1219; border-radius:7px; padding:8px; word-break:break-all; line-height:1.5; margin-top:8px; }
+  code { background:#0e1219; padding:1px 5px; border-radius:5px; font-size:12px; }
+  small { color:#9fb0c6; }
+</style>
+</head>
+<body>
+<header>
+  <b>트윈 제어판</b> — 센서 대신 <b>슬라이더와 버튼</b>으로 표준 JSON 메시지를 MQTT 브로커에 보냅니다.
+  같은 ID로 연결한 <code>splat-twin.html</code>·<code>twin-subscribe.html</code>의 3D 오브젝트가 따라 움직입니다. 폰 센서(<code>phone-publish.html</code>)나 ESP32가 보내는 것과 <b>똑같은 형식</b>입니다.
+</header>
+<main>
+  <section>
+    <h2>① MQTT 연결</h2>
+    <label>내 ID (트윈 페이지와 같게)</label>
+    <input type="text" id="idInput" maxlength="12" placeholder="예: 1234">
+    <button id="connBtn">연결</button><button id="disconnBtn" class="gray" style="display:none">연결 끊기</button>
+    <div style="margin-top:10px">
+      <div class="row"><span class="k"><span class="dot" id="dot"></span>상태</span><span class="v" id="connState">대기 중</span></div>
+      <div class="row"><span class="k">보내는 토픽</span><span class="v" id="topic">khu/pcomp/?/sensor</span></div>
+      <div class="row"><span class="k">보낸 메시지</span><span class="v" id="count">0</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>② 값 만들기 — 폰을 기울이는 대신 슬라이더</h2>
+    <label>beta (앞뒤 기울기, 문 각도로 쓰임) <span class="v" id="vBeta">0</span></label><input type="range" id="beta" min="-180" max="180" value="0">
+    <label>gamma (좌우 기울기) <span class="v" id="vGamma">0</span></label><input type="range" id="gamma" min="-90" max="90" value="0">
+    <label>alpha (나침반 방향) <span class="v" id="vAlpha">0</span></label><input type="range" id="alpha" min="0" max="360" value="0">
+    <button id="openBtn">문 열기 (beta=80)</button><button id="closeBtn">문 닫기 (beta=0)</button><button id="simBtn" class="amber">시뮬레이션 (6초 주기 자동)</button>
+    <small>👉 슬라이더를 움직일 때마다 보냅니다. 트윈 쪽 <code>매핑</code>이 "회전"이면 beta, "기울기"면 beta·gamma가 쓰입니다.</small>
+    <div id="payload">아직 보낸 값이 없습니다.</div>
+  </section>
+
+  <section>
+    <h2>③ 이 메시지는 어디로 가나</h2>
+    <small>제어판 → <code>wss://broker.emqx.io:8084/mqtt</code>(공개 브로커) → 토픽 <code>khu/pcomp/{id}/sensor</code> → 구독 중인 모든 트윈 페이지. 브로커는 "우편함"이고, 같은 ID를 쓰는 사람은 누구나 받습니다. 개인 정보는 보내지 마세요.</small>
+  </section>
+</main>
+
+<!-- MQTT.js (버전 고정) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+<script>
+/* ===== 👉 여기를 바꿔보세요 — 브로커·토픽 규약 (폰·ESP32·트윈과 같아야 합니다) ===== */
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const 토픽 = id => `khu/pcomp/${id}/sensor`;
+/* ================================================================================ */
+const $ = id => document.getElementById(id);
+let client = null, 보낸수 = 0, 시뮬 = null, 내ID = '';
+function 상태표시(t, cls) { $('connState').textContent = t; $('dot').className = 'dot ' + (cls || ''); }
+
+$('idInput').value = localStorage.getItem('khu_pcomp_id') || '';
+$('connBtn').addEventListener('click', () => {
+  내ID = $('idInput').value.trim(); if (!내ID) { alert('트윈 페이지와 같은 ID를 입력하세요'); return; }
+  localStorage.setItem('khu_pcomp_id', 내ID); $('topic').textContent = 토픽(내ID);
+  if (client) client.end(true);
+  상태표시('연결 중…', '');
+  client = mqtt.connect(BROKER, { clientId: 'control-' + 내ID + '-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 2000, connectTimeout: 8000, clean: true });
+  client.on('connect', () => { 상태표시('연결됨 ✔', 'on'); $('connBtn').style.display = 'none'; $('disconnBtn').style.display = 'inline-block'; 보내기(); });
+  client.on('reconnect', () => 상태표시('재연결 중…', ''));
+  client.on('error', e => 상태표시('오류: ' + e.message, 'err'));
+});
+$('disconnBtn').addEventListener('click', () => { if (시뮬) 시뮬토글(); if (client) client.end(true); client = null; 상태표시('끊김', ''); $('connBtn').style.display = 'inline-block'; $('disconnBtn').style.display = 'none'; });
+
+/* 표준 페이로드 — phone-publish.html·ESP32 main.py 와 같은 7개 키 */
+function 페이로드() {
+  const beta = +$('beta').value, gamma = +$('gamma').value, alpha = +$('alpha').value;
+  const r = x => x * Math.PI / 180;   // 기울기에 맞는 중력 가속도 흉내 (합이 약 9.8)
+  return { ax: +(9.8 * Math.sin(r(gamma))).toFixed(2), ay: +(9.8 * Math.sin(r(beta))).toFixed(2), az: +(9.8 * Math.cos(r(beta)) * Math.cos(r(gamma))).toFixed(2),
+           alpha: +alpha.toFixed(1), beta: +beta.toFixed(1), gamma: +gamma.toFixed(1), t: Date.now() };
+}
+function 보내기() {
+  const d = 페이로드(); $('vBeta').textContent = d.beta; $('vGamma').textContent = d.gamma; $('vAlpha').textContent = d.alpha;
+  const 문자열 = JSON.stringify(d); $('payload').textContent = 문자열 + (client && client.connected ? '' : '  (연결되지 않아 보내지 않음)');
+  if (client && client.connected) { client.publish(토픽(내ID), 문자열); 보낸수++; $('count').textContent = 보낸수; }
+}
+['beta', 'gamma', 'alpha'].forEach(id => $(id).addEventListener('input', 보내기));
+$('openBtn').addEventListener('click', () => { $('beta').value = 80; 보내기(); });
+$('closeBtn').addEventListener('click', () => { $('beta').value = 0; 보내기(); });
+function 시뮬토글() {
+  if (시뮬) { clearInterval(시뮬); 시뮬 = null; $('simBtn').textContent = '시뮬레이션 (6초 주기 자동)'; return; }
+  const t0 = Date.now(); $('simBtn').textContent = '시뮬레이션 끄기';
+  시뮬 = setInterval(() => { const p = (Date.now() - t0) / 6000 * Math.PI * 2;
+    $('beta').value = Math.round(45 + 45 * Math.sin(p) + (Math.random() - .5) * 4); $('gamma').value = Math.round(30 * Math.sin(p * .5)); 보내기(); }, 100);
+}
+$('simBtn').addEventListener('click', 시뮬토글);
+보내기();
+</script>
+</body>
+</html>
